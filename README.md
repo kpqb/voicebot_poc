@@ -47,7 +47,19 @@ This directory houses the web frontend, built with Next.js.
 
 The agent can be deployed in a variety of ways: [Deployment & Scaling Guide](https://docs.livekit.io/agents/deployment/)
 
-The web frontend can be deployed using your preferred Next.js hosting solution, such as [Vercel](https://vercel.com/).
+### Vercel (web frontend only)
+
+The Python agent does **not** run on Vercel. Deploy only the Next.js app in `/web`.
+
+1. Import [this repo](https://github.com/kpqb/voicebot_poc) in Vercel
+2. **Project Settings → General → Root Directory → set to `web`** (required — otherwise Vercel detects the Python agent and fails)
+3. **Environment variables** (Settings → Environment Variables):
+   - `LIVEKIT_URL` — e.g. `wss://your-project.livekit.cloud`
+   - `LIVEKIT_API_KEY`
+   - `LIVEKIT_API_SECRET`
+4. Deploy. Framework should auto-detect as **Next.js** with **pnpm**
+
+The OpenAI API key is entered by users in the browser UI, not in Vercel env vars.
 
 ## Troubleshooting
 
