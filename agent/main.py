@@ -7,8 +7,11 @@ import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Literal
 
+from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
+    Agent,
+    AgentSession,
     AutoSubscribe,
     JobContext,
     WorkerOptions,
@@ -16,25 +19,32 @@ from livekit.agents import (
     cli,
     llm,
 )
-from livekit.agents.multimodal import MultimodalAgent
 from livekit.plugins import openai
-
-from dotenv import load_dotenv
+from openai.types.realtime import realtime_audio_input_turn_detection
 
 load_dotenv()
 
 logger = logging.getLogger("my-worker")
 logger.setLevel(logging.INFO)
 
+DEFAULT_TURN_DETECTION = realtime_audio_input_turn_detection.ServerVad(
+    type="server_vad",
+    threshold=0.5,
+    prefix_padding_ms=200,
+    silence_duration_ms=300,
+    create_response=True,
+)
+
+
 @dataclass
 class SessionConfig:
     openai_api_key: str
     instructions: str
-    voice: openai.realtime.api_proto.Voice
+    voice: str
     temperature: float
     max_response_output_tokens: str | int
-    modalities: list[openai.realtime.api_proto.Modality]
-    turn_detection: openai.realtime.ServerVadOptions
+    modalities: list[Literal["text", "audio"]]
+    turn_detection: realtime_audio_input_turn_detection.ServerVad
 
     def __post_init__(self):
         if self.modalities is None:
@@ -44,44 +54,49 @@ class SessionConfig:
         return {k: v for k, v in asdict(self).items() if k != "openai_api_key"}
 
     @staticmethod
-    def _modalities_from_string(modalities: str) -> list[str]:
-        modalities_map = {
+    def _modalities_from_string(modalities: str) -> list[Literal["text", "audio"]]:
+        modalities_map: dict[str, list[Literal["text", "audio"]]] = {
             "text_and_audio": ["text", "audio"],
             "text_only": ["text"],
         }
         return modalities_map.get(modalities, ["text", "audio"])
 
-    def __eq__(self, other: SessionConfig) -> bool:
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SessionConfig):
+            return False
         return self.to_dict() == other.to_dict()
 
 
 def parse_session_config(data: Dict[str, Any]) -> SessionConfig:
-    turn_detection = None
+    turn_detection = DEFAULT_TURN_DETECTION
 
     if data.get("turn_detection"):
         turn_detection_json = json.loads(data.get("turn_detection"))
-        turn_detection = openai.realtime.ServerVadOptions(
+        turn_detection = realtime_audio_input_turn_detection.ServerVad(
+            type="server_vad",
             threshold=turn_detection_json.get("threshold", 0.5),
             prefix_padding_ms=turn_detection_json.get("prefix_padding_ms", 200),
             silence_duration_ms=turn_detection_json.get("silence_duration_ms", 300),
+            create_response=True,
         )
-    else:
-        turn_detection = openai.realtime.DEFAULT_SERVER_VAD_OPTIONS
 
-    config = SessionConfig(
+    max_output_tokens = data.get("max_output_tokens")
+    if max_output_tokens == "inf":
+        max_tokens: str | int = "inf"
+    else:
+        max_tokens = int(max_output_tokens or 2048)
+
+    return SessionConfig(
         openai_api_key=data.get("openai_api_key", ""),
         instructions=data.get("instructions", ""),
         voice=data.get("voice", "alloy"),
         temperature=float(data.get("temperature", 0.8)),
-        max_response_output_tokens=data.get("max_output_tokens")
-        if data.get("max_output_tokens") == "inf"
-        else int(data.get("max_output_tokens") or 2048),
+        max_response_output_tokens=max_tokens,
         modalities=SessionConfig._modalities_from_string(
             data.get("modalities", "text_and_audio")
         ),
         turn_detection=turn_detection,
     )
-    return config
 
 
 async def entrypoint(ctx: JobContext):
@@ -89,120 +104,91 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
     participant = await ctx.wait_for_participant()
-
-    run_multimodal_agent(ctx, participant)
+    await run_playground_agent(ctx, participant)
 
     logger.info("agent started")
 
 
-def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
-    metadata = json.loads(participant.metadata)
-    config = parse_session_config(metadata)
+async def run_playground_agent(ctx: JobContext, participant: rtc.Participant):
+    config = parse_session_config(json.loads(participant.metadata))
 
-    logger.info(f"starting MultimodalAgent with config: {config.to_dict()}")
+    logger.info(f"starting playground agent with config: {config.to_dict()}")
 
     if not config.openai_api_key:
         raise Exception("OpenAI API Key is required")
 
     model = openai.realtime.RealtimeModel(
         api_key=config.openai_api_key,
-        instructions=config.instructions,
         voice=config.voice,
-        temperature=config.temperature,
-        max_response_output_tokens=config.max_response_output_tokens,
         modalities=config.modalities,
         turn_detection=config.turn_detection,
     )
-    assistant = MultimodalAgent(model=model)
-    assistant.start(ctx.room)
-    session = model.sessions[0]
+    model.update_options(max_response_output_tokens=config.max_response_output_tokens)
 
-    if config.modalities == ["text", "audio"]:
-        session.conversation.item.create(
-            llm.ChatMessage(
-                role="user",
-                content="Please begin the interaction with the user in a manner consistent with your instructions.",
-            )
-        )
-        session.response.create()
+    agent = Agent(instructions=config.instructions)
+    session = AgentSession(llm=model)
+
+    current_config = config
 
     @ctx.room.local_participant.register_rpc_method("pg.updateConfig")
-    async def update_config(
-        data: rtc.rpc.RpcInvocationData,
-    ):
+    async def update_config(data: rtc.rpc.RpcInvocationData):
+        nonlocal current_config
         if data.caller_identity != participant.identity:
-            return
-
-        new_config = parse_session_config(json.loads(data.payload))
-        if config != new_config:
-            logger.info(
-                f"config changed: {new_config.to_dict()}, participant: {participant.identity}"
-            )
-            session = model.sessions[0]
-            session.session_update(
-                instructions=new_config.instructions,
-                voice=new_config.voice,
-                temperature=new_config.temperature,
-                max_response_output_tokens=new_config.max_response_output_tokens,
-                turn_detection=new_config.turn_detection,
-                modalities=new_config.modalities,
-            )
-            return json.dumps({"changed": True})
-        else:
             return json.dumps({"changed": False})
 
-    @session.on("response_done")
-    def on_response_done(response: openai.realtime.RealtimeResponse):
-        variant: Literal["warning", "destructive"]
-        description: str | None = None
-        title: str
-        if response.status == "incomplete":
-            if response.status_details and response.status_details["reason"]:
-                reason = response.status_details["reason"]
-                if reason == "max_output_tokens":
-                    variant = "warning"
-                    title = "Max output tokens reached"
-                    description = "Response may be incomplete"
-                elif reason == "content_filter":
-                    variant = "warning"
-                    title = "Content filter applied"
-                    description = "Response may be incomplete"
-                else:
-                    variant = "warning"
-                    title = "Response incomplete"
-            else:
-                variant = "warning"
-                title = "Response incomplete"
-        elif response.status == "failed":
-            if response.status_details and response.status_details["error"]:
-                error_code = response.status_details["error"]["code"]
-                if error_code == "server_error":
-                    variant = "destructive"
-                    title = "Server error"
-                elif error_code == "rate_limit_exceeded":
-                    variant = "destructive"
-                    title = "Rate limit exceeded"
-                else:
-                    variant = "destructive"
-                    title = "Response failed"
-            else:
-                variant = "destructive"
-                title = "Response failed"
-        else:
-            return
+        new_config = parse_session_config(json.loads(data.payload))
+        if current_config == new_config:
+            return json.dumps({"changed": False})
 
-        asyncio.create_task(show_toast(title, description, variant))
+        logger.info(
+            f"config changed: {new_config.to_dict()}, participant: {participant.identity}"
+        )
+
+        await agent.update_instructions(new_config.instructions)
+        model.update_options(
+            voice=new_config.voice,
+            turn_detection=new_config.turn_detection,
+            max_response_output_tokens=new_config.max_response_output_tokens,
+        )
+        current_config = new_config
+        return json.dumps({"changed": True})
+
+    await session.start(agent=agent, room=ctx.room)
+
+    rt_session = agent.realtime_llm_session
+    if rt_session is None:
+        raise RuntimeError("realtime session not available after start")
+
+    setup_playground_handlers(ctx, participant, rt_session)
+
+    if "audio" in config.modalities:
+        await session.generate_reply(
+            instructions=(
+                "Please begin the interaction with the user in a manner "
+                "consistent with your instructions."
+            )
+        )
+
+
+def setup_playground_handlers(
+    ctx: JobContext,
+    participant: rtc.Participant,
+    rt_session: llm.RealtimeSession,
+):
+    last_transcript_id: str | None = None
 
     async def send_transcription(
-        ctx: JobContext,
-        participant: rtc.Participant,
-        track_sid: str,
+        remote_participant: rtc.Participant,
+        track_sid: str | None,
         segment_id: str,
         text: str,
         is_final: bool = True,
     ):
+        if not track_sid:
+            return
+
         transcription = rtc.Transcription(
-            participant_identity=participant.identity,
+            participant_identity=remote_participant.identity,
             track_sid=track_sid,
             segments=[
                 rtc.TranscriptionSegment(
@@ -230,15 +216,10 @@ def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
             ),
         )
 
-    last_transcript_id = None
-
-    # send three dots when the user starts talking. will be cleared later when a real transcription is sent.
-    @session.on("input_speech_started")
-    def on_input_speech_started():
-        nonlocal last_transcript_id
+    def get_remote_mic_track_sid() -> tuple[rtc.Participant | None, str | None]:
         remote_participant = next(iter(ctx.room.remote_participants.values()), None)
         if not remote_participant:
-            return
+            return None, None
 
         track_sid = next(
             (
@@ -248,10 +229,65 @@ def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
             ),
             None,
         )
+        return remote_participant, track_sid
+
+    @rt_session.on("openai_server_event_received")
+    def on_server_event(event: dict[str, Any]):
+        if event.get("type") != "response.done":
+            return
+
+        response = event.get("response", {})
+        status = response.get("status")
+        if status == "completed":
+            return
+
+        variant: Literal["warning", "destructive"]
+        description: str | None = None
+        title: str
+
+        if status == "incomplete":
+            status_details = response.get("status_details") or {}
+            reason = status_details.get("reason")
+            if reason == "max_output_tokens":
+                variant = "warning"
+                title = "Max output tokens reached"
+                description = "Response may be incomplete"
+            elif reason == "content_filter":
+                variant = "warning"
+                title = "Content filter applied"
+                description = "Response may be incomplete"
+            else:
+                variant = "warning"
+                title = "Response incomplete"
+        elif status == "failed":
+            status_details = response.get("status_details") or {}
+            error = status_details.get("error") or {}
+            error_code = error.get("code")
+            if error_code == "server_error":
+                variant = "destructive"
+                title = "Server error"
+            elif error_code == "rate_limit_exceeded":
+                variant = "destructive"
+                title = "Rate limit exceeded"
+            else:
+                variant = "destructive"
+                title = "Response failed"
+        else:
+            return
+
+        asyncio.create_task(show_toast(title, description, variant))
+
+    @rt_session.on("input_speech_started")
+    def on_input_speech_started(_: llm.InputSpeechStartedEvent):
+        nonlocal last_transcript_id
+        remote_participant, track_sid = get_remote_mic_track_sid()
+        if not remote_participant:
+            return
+
         if last_transcript_id:
             asyncio.create_task(
                 send_transcription(
-                    ctx, remote_participant, track_sid, last_transcript_id, ""
+                    remote_participant, track_sid, last_transcript_id, ""
                 )
             )
 
@@ -259,65 +295,50 @@ def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
         last_transcript_id = new_id
         asyncio.create_task(
             send_transcription(
-                ctx, remote_participant, track_sid, new_id, "…", is_final=False
+                remote_participant, track_sid, new_id, "…", is_final=False
             )
         )
 
-    @session.on("input_speech_transcription_completed")
-    def on_input_speech_transcription_completed(
-        event: openai.realtime.InputTranscriptionCompleted,
+    @rt_session.on("input_audio_transcription_completed")
+    def on_input_audio_transcription_completed(
+        _: llm.InputTranscriptionCompleted,
     ):
         nonlocal last_transcript_id
-        if last_transcript_id:
-            remote_participant = next(iter(ctx.room.remote_participants.values()), None)
-            if not remote_participant:
-                return
+        if not last_transcript_id:
+            return
 
-            track_sid = next(
-                (
-                    track.sid
-                    for track in remote_participant.track_publications.values()
-                    if track.source == rtc.TrackSource.SOURCE_MICROPHONE
-                ),
-                None,
-            )
-            asyncio.create_task(
-                send_transcription(
-                    ctx, remote_participant, track_sid, last_transcript_id, ""
-                )
-            )
-            last_transcript_id = None
+        remote_participant, track_sid = get_remote_mic_track_sid()
+        if not remote_participant:
+            return
 
-    @session.on("input_speech_transcription_failed")
-    def on_input_speech_transcription_failed(
-        event: openai.realtime.InputTranscriptionFailed,
-    ):
+        asyncio.create_task(
+            send_transcription(
+                remote_participant, track_sid, last_transcript_id, ""
+            )
+        )
+        last_transcript_id = None
+
+    @rt_session.on("openai_server_event_received")
+    def on_transcription_failed(event: dict[str, Any]):
         nonlocal last_transcript_id
-        if last_transcript_id:
-            remote_participant = next(iter(ctx.room.remote_participants.values()), None)
-            if not remote_participant:
-                return
+        if event.get("type") != "conversation.item.input_audio_transcription.failed":
+            return
+        if not last_transcript_id:
+            return
 
-            track_sid = next(
-                (
-                    track.sid
-                    for track in remote_participant.track_publications.values()
-                    if track.source == rtc.TrackSource.SOURCE_MICROPHONE
-                ),
-                None,
-            )
+        remote_participant, track_sid = get_remote_mic_track_sid()
+        if not remote_participant:
+            return
 
-            error_message = "⚠️ Transcription failed"
-            asyncio.create_task(
-                send_transcription(
-                    ctx,
-                    remote_participant,
-                    track_sid,
-                    last_transcript_id,
-                    error_message,
-                )
+        asyncio.create_task(
+            send_transcription(
+                remote_participant,
+                track_sid,
+                last_transcript_id,
+                "⚠️ Transcription failed",
             )
-            last_transcript_id = None
+        )
+        last_transcript_id = None
 
 
 if __name__ == "__main__":

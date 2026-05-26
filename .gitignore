@@ -1,5 +1,13 @@
 venv
+.venv
 node_modules
 .DS_Store
 .env
 .env.local
+.env.*
+!.env.sample
+!**/.env.sample
+__pycache__/
+*.pyc
+.next
+.vercel
