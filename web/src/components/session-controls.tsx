@@ -22,7 +22,7 @@ import { Track } from "livekit-client";
 
 import { useConnection } from "@/hooks/use-connection";
 import { useMultibandTrackVolume } from "@/hooks/use-multiband-track-volume";
-import { MultibandAudioVisualizer } from "./agent/visualizers/multiband-bar-visualizer";
+import { MultibandAudioVisualizer } from "@/components/agent/visualizers/multiband-bar-visualizer";
 
 export function SessionControls() {
   const localParticipant = useLocalParticipant();
