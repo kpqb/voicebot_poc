@@ -1,6 +1,9 @@
 import { AccessToken } from "livekit-server-sdk";
 import { PlaygroundState } from "@/data/playground-state";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request) {
   let playgroundState: PlaygroundState;
 
@@ -38,8 +41,16 @@ export async function POST(request: Request) {
   const roomName = Math.random().toString(36).slice(7);
   const apiKey = process.env.LIVEKIT_API_KEY;
   const apiSecret = process.env.LIVEKIT_API_SECRET;
-  if (!apiKey || !apiSecret) {
-    throw new Error("LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set");
+  const livekitUrl = process.env.LIVEKIT_URL;
+
+  if (!apiKey || !apiSecret || !livekitUrl) {
+    return Response.json(
+      {
+        error:
+          "Server misconfigured: LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET must be set",
+      },
+      { status: 500 },
+    );
   }
 
   const at = new AccessToken(apiKey, apiSecret, {
@@ -69,6 +80,6 @@ export async function POST(request: Request) {
   });
   return Response.json({
     accessToken: await at.toJwt(),
-    url: process.env.LIVEKIT_URL,
+    url: livekitUrl,
   });
 }

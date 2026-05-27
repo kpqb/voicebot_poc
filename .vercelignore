@@ -1,0 +1,5 @@
+agent/
+prompts/
+**/.venv/
+**/__pycache__/
+*.pyc
