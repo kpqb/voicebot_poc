@@ -21,7 +21,10 @@ from livekit.agents import (
     llm,
 )
 from livekit.plugins import openai
-from openai.types.realtime import realtime_audio_input_turn_detection
+from openai.types.realtime import (
+    AudioTranscription,
+    realtime_audio_input_turn_detection,
+)
 
 from prompt_loader import load_salesbot_prompt
 
@@ -153,6 +156,11 @@ async def run_realtime_agent(ctx: JobContext, participant: rtc.Participant):
         voice=config.voice,
         modalities=config.modalities,
         turn_detection=config.turn_detection,
+        input_audio_noise_reduction="near_field",
+        input_audio_transcription=AudioTranscription(
+            model="gpt-4o-mini-transcribe",
+            language="en",
+        ),
     )
     model.update_options(max_response_output_tokens=config.max_response_output_tokens)
 
@@ -182,6 +190,10 @@ async def run_realtime_agent(ctx: JobContext, participant: rtc.Participant):
             voice=new_config.voice,
             turn_detection=new_config.turn_detection,
             max_response_output_tokens=new_config.max_response_output_tokens,
+            input_audio_transcription=AudioTranscription(
+                model="gpt-4o-mini-transcribe",
+                language="en",
+            ),
         )
         current_config = new_config
         return json.dumps({"changed": True})
@@ -197,8 +209,9 @@ async def run_realtime_agent(ctx: JobContext, participant: rtc.Participant):
     if "audio" in config.modalities:
         await session.generate_reply(
             instructions=(
-                "Begin the call now with a short warm greeting and one open "
-                "question, following your system instructions."
+                "Begin the call now in clear English only. Give a short warm greeting "
+                "and one open question. Pronounce numbers, names, and product names "
+                "precisely. Do not use any language other than English."
             )
         )
 
