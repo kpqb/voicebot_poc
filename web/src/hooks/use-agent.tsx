@@ -3,6 +3,7 @@ import {
   useMaybeRoomContext,
   useVoiceAssistant,
   useLocalParticipant,
+  useConnectionState,
 } from "@livekit/components-react";
 import {
   RoomEvent,
@@ -10,9 +11,9 @@ import {
   Participant,
   TrackPublication,
   RemoteParticipant,
+  ConnectionState,
   type RpcInvocationData,
 } from "livekit-client";
-import { useConnection } from "@/hooks/use-connection";
 import { useToast } from "@/hooks/use-toast";
 interface Transcription {
   segment: TranscriptionSegment;
@@ -29,7 +30,7 @@ const AgentContext = createContext<AgentContextType | undefined>(undefined);
 
 export function AgentProvider({ children }: { children: React.ReactNode }) {
   const room = useMaybeRoomContext();
-  const { shouldConnect } = useConnection();
+  const connectionState = useConnectionState();
   const { agent } = useVoiceAssistant();
   const { localParticipant } = useLocalParticipant();
   const [rawSegments, setRawSegments] = useState<{
@@ -123,11 +124,11 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   }, [rawSegments]);
 
   useEffect(() => {
-    if (shouldConnect) {
+    if (connectionState === ConnectionState.Disconnected) {
       setRawSegments({});
       setDisplayTranscriptions([]);
     }
-  }, [shouldConnect]);
+  }, [connectionState]);
 
   return (
     <AgentContext.Provider value={{ displayTranscriptions, agent }}>

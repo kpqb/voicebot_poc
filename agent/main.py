@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Literal
@@ -22,16 +23,26 @@ from livekit.agents import (
 from livekit.plugins import openai
 from openai.types.realtime import realtime_audio_input_turn_detection
 
+from prompt_loader import load_salesbot_prompt
+
 load_dotenv()
 
 logger = logging.getLogger("my-worker")
 logger.setLevel(logging.INFO)
 
+# livekit-agents 1.5.x uses AgentSession + Agent (GA Realtime API).
+# Legacy pattern (0.12.x):
+#   from livekit.agents import multimodal
+#   agent = multimodal.MultimodalAgent(model=openai.realtime.RealtimeModel(...))
+#   agent.start(ctx.room)
+
+DEFAULT_INSTRUCTIONS = load_salesbot_prompt()
+
 DEFAULT_TURN_DETECTION = realtime_audio_input_turn_detection.ServerVad(
     type="server_vad",
     threshold=0.5,
-    prefix_padding_ms=200,
-    silence_duration_ms=300,
+    prefix_padding_ms=300,
+    silence_duration_ms=200,
     create_response=True,
 )
 
@@ -75,48 +86,68 @@ def parse_session_config(data: Dict[str, Any]) -> SessionConfig:
         turn_detection = realtime_audio_input_turn_detection.ServerVad(
             type="server_vad",
             threshold=turn_detection_json.get("threshold", 0.5),
-            prefix_padding_ms=turn_detection_json.get("prefix_padding_ms", 200),
-            silence_duration_ms=turn_detection_json.get("silence_duration_ms", 300),
+            prefix_padding_ms=turn_detection_json.get("prefix_padding_ms", 300),
+            silence_duration_ms=turn_detection_json.get("silence_duration_ms", 200),
             create_response=True,
         )
 
     max_output_tokens = data.get("max_output_tokens")
-    if max_output_tokens == "inf":
+    if max_output_tokens in (None, "", "inf", "null"):
         max_tokens: str | int = "inf"
+    elif max_output_tokens == "inf":
+        max_tokens = "inf"
     else:
-        max_tokens = int(max_output_tokens or 2048)
+        max_tokens = int(max_output_tokens)
+
+    # Always use prompts/prompt.txt; OpenAI key from env or participant metadata.
+    instructions = DEFAULT_INSTRUCTIONS
+
+    openai_api_key = (os.getenv("OPENAI_API_KEY") or "").strip() or (
+        (data.get("openai_api_key") or "").strip()
+    )
 
     return SessionConfig(
-        openai_api_key=data.get("openai_api_key", ""),
-        instructions=data.get("instructions", ""),
-        voice=data.get("voice", "alloy"),
-        temperature=float(data.get("temperature", 0.8)),
+        openai_api_key=openai_api_key,
+        instructions=instructions,
+        voice=data.get("voice") or "alloy",
+        temperature=float(data.get("temperature") or 0.8),
         max_response_output_tokens=max_tokens,
         modalities=SessionConfig._modalities_from_string(
-            data.get("modalities", "text_and_audio")
+            data.get("modalities") or "text_and_audio"
         ),
         turn_detection=turn_detection,
     )
 
 
 async def entrypoint(ctx: JobContext):
-    logger.info(f"connecting to room {ctx.room.name}")
+    logger.info("connecting to room %s", ctx.room.name)
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
     participant = await ctx.wait_for_participant()
-    await run_playground_agent(ctx, participant)
+    await run_realtime_agent(ctx, participant)
 
     logger.info("agent started")
 
 
-async def run_playground_agent(ctx: JobContext, participant: rtc.Participant):
-    config = parse_session_config(json.loads(participant.metadata))
+async def run_realtime_agent(ctx: JobContext, participant: rtc.Participant):
+    metadata_raw = participant.metadata or "{}"
+    try:
+        data = json.loads(metadata_raw) if metadata_raw.strip() else {}
+    except json.JSONDecodeError:
+        logger.warning("invalid participant metadata, using defaults")
+        data = {}
 
-    logger.info(f"starting playground agent with config: {config.to_dict()}")
+    config = parse_session_config(data)
+
+    logger.info("starting realtime agent with config: %s", config.to_dict())
 
     if not config.openai_api_key:
-        raise Exception("OpenAI API Key is required")
+        raise RuntimeError(
+            "OpenAI API key is required. Set OPENAI_API_KEY in agent/.env "
+            "or enter it in the web UI."
+        )
 
+    # Equivalent to MultimodalAgent(model=RealtimeModel(...)) in livekit-agents 0.12.x
     model = openai.realtime.RealtimeModel(
         api_key=config.openai_api_key,
         voice=config.voice,
@@ -141,7 +172,9 @@ async def run_playground_agent(ctx: JobContext, participant: rtc.Participant):
             return json.dumps({"changed": False})
 
         logger.info(
-            f"config changed: {new_config.to_dict()}, participant: {participant.identity}"
+            "config changed: %s, participant: %s",
+            new_config.to_dict(),
+            participant.identity,
         )
 
         await agent.update_instructions(new_config.instructions)
@@ -164,8 +197,8 @@ async def run_playground_agent(ctx: JobContext, participant: rtc.Participant):
     if "audio" in config.modalities:
         await session.generate_reply(
             instructions=(
-                "Please begin the interaction with the user in a manner "
-                "consistent with your instructions."
+                "Begin the call now with a short warm greeting and one open "
+                "question, following your system instructions."
             )
         )
 

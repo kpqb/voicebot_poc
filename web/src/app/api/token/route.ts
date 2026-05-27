@@ -31,9 +31,14 @@ export async function POST(request: Request) {
     },
   } = playgroundState;
 
-  if (!openaiAPIKey) {
+  const resolvedOpenAiKey = openaiAPIKey || process.env.OPENAI_API_KEY;
+
+  if (!resolvedOpenAiKey) {
     return Response.json(
-      { error: "OpenAI API key is required" },
+      {
+        error:
+          "OpenAI API key is required. Enter it in the UI or set OPENAI_API_KEY on the server.",
+      },
       { status: 400 },
     );
   }
@@ -61,7 +66,7 @@ export async function POST(request: Request) {
       voice: voice,
       temperature: temperature,
       max_output_tokens: maxOutputTokens,
-      openai_api_key: openaiAPIKey,
+      openai_api_key: resolvedOpenAiKey,
       turn_detection: JSON.stringify({
         type: turnDetection,
         threshold: vadThreshold,

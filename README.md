@@ -88,7 +88,13 @@ Still on the Configure screen (or later under **Settings → Environment Variabl
 
 Use the same values as in `agent/.env` and `web/.env.local`.
 
-Do **not** add `OPENAI_API_KEY` to Vercel — users enter it in the browser UI per session.
+Optional — skip the browser OpenAI key field in production:
+
+| Name | Value | Environments |
+|------|-------|--------------|
+| `OPENAI_API_KEY` | Your OpenAI API key | Production, Preview, Development |
+
+If set on Vercel **and** on the agent worker, users can connect without pasting a key in the UI.
 
 Optional analytics (leave unset if unused):
 
@@ -134,8 +140,26 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS/Linux
 pip install -r requirements.txt
+# copy .env.sample to .env — set LIVEKIT_* and optionally OPENAI_API_KEY
 python main.py dev
 ```
+
+The agent loads the sales prompt from `prompts/prompt.txt` by default. Override with `PROMPT_FILE` in `agent/.env`.
+
+After editing `prompts/prompt.txt`, sync the web preset:
+
+```bash
+python scripts/sync_salesbot_prompt.py
+```
+
+**Option B — Docker / LiveKit Cloud Agents (production)**
+
+```bash
+docker build -f agent/Dockerfile -t voicebot-agent .
+docker run --env-file agent/.env voicebot-agent
+```
+
+Set `OPENAI_API_KEY`, `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` in the container environment.
 
 Keep this terminal running while using the Vercel-hosted UI.
 

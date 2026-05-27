@@ -11,12 +11,13 @@ import React, {
 } from "react";
 import {
   PlaygroundState,
+  DEFAULT_SALESBOT_PRESET_ID,
   defaultSessionConfig,
   defaultPlaygroundState,
 } from "@/data/playground-state";
 import { playgroundStateHelpers } from "@/lib/playground-state-helpers";
 
-import { Preset, defaultPresets } from "@/data/presets";
+import { Preset } from "@/data/presets";
 
 const LS_OPENAI_API_KEY_NAME = "OPENAI_API_KEY";
 const LS_USER_PRESETS_KEY = "PG_USER_PRESETS";
@@ -31,9 +32,13 @@ const presetStorageHelper = {
     localStorage.setItem(LS_USER_PRESETS_KEY, JSON.stringify(presets));
   },
   getStoredSelectedPresetId: (): string => {
-    return (
-      localStorage.getItem(LS_SELECTED_PRESET_ID_KEY) || defaultPresets[0].id
-    );
+    const stored = localStorage.getItem(LS_SELECTED_PRESET_ID_KEY);
+    // Previous playground default; always use the salesbot prompt for this project.
+    if (!stored || stored === "helpful-ai") {
+      localStorage.setItem(LS_SELECTED_PRESET_ID_KEY, DEFAULT_SALESBOT_PRESET_ID);
+      return DEFAULT_SALESBOT_PRESET_ID;
+    }
+    return stored;
   },
   setStoredSelectedPresetId: (presetId: string | null): void => {
     if (presetId !== null) {
@@ -193,13 +198,17 @@ export const PlaygroundStateProvider = ({
     );
 
     if (urlData.state.selectedPresetId) {
+      const presetId =
+        urlData.state.selectedPresetId === "helpful-ai"
+          ? DEFAULT_SALESBOT_PRESET_ID
+          : urlData.state.selectedPresetId;
+
       const defaultPreset = playgroundStateHelpers
         .getDefaultPresets()
-        .find((preset) => preset.id === urlData.state.selectedPresetId);
+        .find((preset) => preset.id === presetId);
 
       if (defaultPreset) {
         dispatch({ type: "SET_SELECTED_PRESET_ID", payload: defaultPreset.id });
-        // Don't clear the URL for default presets
         return;
       }
 
@@ -220,9 +229,15 @@ export const PlaygroundStateProvider = ({
         dispatch({ type: "SET_SELECTED_PRESET_ID", payload: newPreset.id });
       }
 
-      // Clear the URL for non-default presets
       window.history.replaceState({}, document.title, window.location.pathname);
+      return;
     }
+
+    // Apply stored or default salesbot preset (loads instructions from prompt.txt)
+    dispatch({
+      type: "SET_SELECTED_PRESET_ID",
+      payload: presetStorageHelper.getStoredSelectedPresetId(),
+    });
   }, []);
 
   return (

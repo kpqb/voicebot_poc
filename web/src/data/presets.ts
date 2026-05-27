@@ -1,4 +1,5 @@
 import { SessionConfig, defaultSessionConfig } from "./playground-state";
+import { SALESBOT_VOICE_PROMPT } from "./salesbot-prompt";
 import { VoiceId } from "./voices";
 import {
   Bot,
@@ -32,6 +33,24 @@ export enum PresetGroup {
 
 export const defaultPresets: Preset[] = [
   // Functionality Group
+  {
+    id: "ai-sante-salesbot",
+    name: "AI Sante Sales Bot",
+    description:
+      "Arya — full pre-sales and sales voice agent for AI Sante (OpenAI Realtime + LiveKit).",
+    instructions: SALESBOT_VOICE_PROMPT,
+    sessionConfig: {
+      ...defaultSessionConfig,
+      voice: VoiceId.alloy,
+      temperature: 0.8,
+      maxOutputTokens: null,
+      vadThreshold: 0.5,
+      vadSilenceDurationMs: 200,
+      vadPrefixPaddingMs: 300,
+    },
+    defaultGroup: PresetGroup.FUNCTIONALITY,
+    icon: HeadsetIcon,
+  },
   {
     id: "helpful-ai",
     name: "Helpful AI",
